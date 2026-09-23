@@ -1,4 +1,4 @@
-#!/usr/init/env python3
+#!/usr/bin/env python3
 """D&D Initiative Tracker - Interactive Textual TUI Version with Initiative, Damage, Healing & Overheal Reset"""
 
 from typing import Dict, List, Any
@@ -15,15 +15,16 @@ class Combatant:
         self.name = name
         self.hp = hp
         self.base_max_hp = hp  # Permanent starting max HP for resets
-        self.max_hp = hp        # Dynamic max HP (can expand via overheal/temp buffs)
+        self.max_hp = hp       # Dynamic max HP (can expand via overheal/temp buffs)
         self.ac = ac
         self.initiative = initiative
         self.is_player = is_player  # True for persistent players, False for temporary enemies
 
-    def reset_for_new_battle(self):
-        """Resets combatant health and max HP back to original baseline for a new battle."""
+    def reset_for_new_battle(self, new_initiative: int = 0):
+        """Resets combatant health, max HP back to baseline, and sets new initiative for a new battle."""
         self.max_hp = self.base_max_hp
         self.hp = self.base_max_hp
+        self.initiative = new_initiative
 
 
 class BatailleTracker:
@@ -32,11 +33,12 @@ class BatailleTracker:
         self.players: Dict[str, Combatant] = {}
         self.enemies: Dict[str, Combatant] = {}
 
-    def reset(self):
-        """Reset battle: clears ALL enemies, and resets all player HP & max HP back to baseline."""
+    def reset(self, player_initiatives: Dict[str, int] = None):
+        """Reset battle: clears ALL enemies, resets player HP/max HP, and updates player initiatives."""
         self.enemies.clear()
-        for player in self.players.values():
-            player.reset_for_new_battle()
+        for key, player in self.players.items():
+            init = player_initiatives.get(key, 0) if player_initiatives else 0
+            player.reset_for_new_battle(init)
         return True
 
     def get_all_combatants(self) -> List[Combatant]:
@@ -185,6 +187,43 @@ class AddEnemyScreen(ModalScreen):
         self.dismiss((name, hp, ac, init))
 
 
+class ResetBattleScreen(ModalScreen):
+    """Modal dialog to reset battle and set new initiatives for players."""
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, players: Dict[str, Combatant]):
+        super().__init__()
+        self.players = players
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label("[bold magenta]New Battle: Set Player Initiatives[/bold magenta]")
+            for key, player in self.players.items():
+                safe_id = f"init_{key.replace(' ', '_').replace('.', '_')}"
+                yield Label(f"[bold]{player.name}[/bold] (Previous Init: {player.initiative})")
+                yield Input(placeholder="New Initiative Roll", id=safe_id)
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Start Battle", variant="success", id="start-btn")
+                yield Button("Cancel", variant="error", id="cancel-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "start-btn":
+            initiatives = {}
+            for key in self.players:
+                safe_id = f"init_{key.replace(' ', '_').replace('.', '_')}"
+                try:
+                    val = int(self.query_one(f"#{safe_id}", Input).value.strip() or "0")
+                except ValueError:
+                    val = 0
+                initiatives[key] = val
+            self.dismiss(initiatives)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class DamageScreen(ModalScreen):
     """Modal dialog to apply damage to any combatant."""
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -302,8 +341,10 @@ class DndTrackerApp(App):
         padding: 2;
         background: $panel;
         border: thick $primary;
-        width: 44;
-        height: 18;
+        width: 48;
+        height: auto;
+        max-height: 85%;
+        overflow-y: auto;
         align: center middle;
     }
     .dialog-buttons {
@@ -423,8 +464,17 @@ class DndTrackerApp(App):
         self.push_screen(HealingScreen(selected_name), handle_result)
 
     def action_reset_tracker(self) -> None:
-        self.tracker.reset()
-        self.refresh_table()
+        if not self.tracker.players:
+            self.tracker.reset()
+            self.refresh_table()
+            return
+
+        def handle_result(result):
+            if result is not None:
+                self.tracker.reset(result)
+                self.refresh_table()
+
+        self.push_screen(ResetBattleScreen(self.tracker.players), handle_result)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-add-player":
